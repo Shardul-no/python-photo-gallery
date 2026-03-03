@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 from PIL import Image
 import pillow_heif
@@ -10,7 +11,27 @@ pillow_heif.register_heif_opener()
 
 class ThumbnailService:
     @staticmethod
-    def generate_thumbnail(file_path: str, media_type: str, duration: float = None) -> str:
+    def get_ffmpeg_executable():
+        """Returns the path to the ffmpeg executable, checking bundled location first."""
+        if getattr(sys, 'frozen', False):
+            # PyInstaller extraction path
+            bundled_ffmpeg = os.path.join(sys._MEIPASS, 'ffmpeg.exe')
+            if os.path.exists(bundled_ffmpeg):
+                return bundled_ffmpeg
+        return 'ffmpeg'
+
+    @staticmethod
+    def get_ffprobe_executable():
+        """Returns the path to the ffprobe executable, checking bundled location first."""
+        if getattr(sys, 'frozen', False):
+            # PyInstaller extraction path
+            bundled_ffprobe = os.path.join(sys._MEIPASS, 'ffprobe.exe')
+            if os.path.exists(bundled_ffprobe):
+                return bundled_ffprobe
+        return 'ffprobe'
+
+    @classmethod
+    def generate_thumbnail(cls, file_path: str, media_type: str, duration: float = None) -> str:
         """
         Generates a thumbnail and returns the path to it.
         If it exists, just returns the path.
@@ -28,9 +49,9 @@ class ThumbnailService:
         
         try:
             if media_type == "image" or ext in ['.heic', '.heif']:
-                ThumbnailService._generate_image_thumbnail(file_path, thumb_path)
+                cls._generate_image_thumbnail(file_path, thumb_path)
             elif media_type == "video":
-                ThumbnailService._generate_video_thumbnail(file_path, thumb_path, duration)
+                cls._generate_video_thumbnail(file_path, thumb_path, duration)
             
             if os.path.exists(thumb_path):
                 return thumb_path
@@ -39,7 +60,7 @@ class ThumbnailService:
             # HEIC Fallback using ffmpeg if PIL fails
             if ext in ['.heic', '.heif']:
                 try:
-                    ThumbnailService._generate_heic_fallback(file_path, thumb_path)
+                    cls._generate_heic_fallback(file_path, thumb_path)
                     if os.path.exists(thumb_path):
                         return thumb_path
                 except Exception as fe:
@@ -62,11 +83,11 @@ class ThumbnailService:
             img = img.resize((width, height), Image.Resampling.LANCZOS)
             img.save(dst, "JPEG", quality=75)
 
-    @staticmethod
-    def _generate_heic_fallback(src, dst):
+    @classmethod
+    def _generate_heic_fallback(cls, src, dst):
         """Uses ffmpeg to convert HEIC to JPEG thumbnail."""
         cmd = [
-            'ffmpeg',
+            cls.get_ffmpeg_executable(),
             '-y',
             '-i', src,
             '-frames:v', '1',
@@ -75,13 +96,13 @@ class ThumbnailService:
         ]
         subprocess.run(cmd, capture_output=True, check=False)
 
-    @staticmethod
-    def _generate_video_thumbnail(src, dst, duration):
+    @classmethod
+    def _generate_video_thumbnail(cls, src, dst, duration):
         # Extract frame at 30% duration
         seek_time = (duration * 0.3) if duration else 1.0
         
         cmd = [
-            'ffmpeg',
+            cls.get_ffmpeg_executable(),
             '-y',
             '-ss', str(seek_time),
             '-i', src,

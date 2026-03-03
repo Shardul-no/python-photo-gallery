@@ -24,3 +24,9 @@ Thumbs.db
 gallery.db
 temp/
 cache/
+build/
+dist/
+*.bak
+*.tmp
+*.msi
+*.exe

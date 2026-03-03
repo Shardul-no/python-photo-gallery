@@ -1,3 +1,4 @@
 PySide6
 Pillow
+pillow-heif
 # ffmpeg should be installed on the system
