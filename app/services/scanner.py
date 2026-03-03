@@ -25,6 +25,9 @@ class MediaScanner(QRunnable):
         try:
             files_to_scan = []
             for root, _, files in os.walk(self.root_path):
+                # Simple check to see if scanner was cancelled or source deleted
+                if not self.signals: break
+
                 for file in files:
                     ext = os.path.splitext(file)[1].lower()
                     if ext in self.supported_extensions:
@@ -32,7 +35,8 @@ class MediaScanner(QRunnable):
 
             total = len(files_to_scan)
             if total == 0:
-                self.signals.finished.emit()
+                try: self.signals.finished.emit()
+                except RuntimeError: pass
                 return
 
             conn = get_connection()
@@ -40,10 +44,15 @@ class MediaScanner(QRunnable):
             
             batch = []
             for i, file_path in enumerate(files_to_scan):
-                # Check if already indexed (optional but good for performance)
+                # Safety check
+                try: 
+                    self.signals.progress.emit(i, total)
+                except RuntimeError:
+                    break
+
+                # Check if already indexed
                 cursor.execute("SELECT id FROM media WHERE file_path = ?", (file_path,))
                 if cursor.fetchone():
-                    self.signals.progress.emit(i + 1, total)
                     continue
 
                 meta = get_media_metadata(file_path)
@@ -57,37 +66,42 @@ class MediaScanner(QRunnable):
                     "date_taken": meta["date_taken"],
                     "type": meta["type"],
                     "duration": meta["duration"],
-                    "thumbnail_path": thumb_path
+                    "thumbnail_path": thumb_path,
+                    "width": meta["width"],
+                    "height": meta["height"],
+                    "orientation": meta["orientation"]
                 }
                 
                 batch.append((
                     item["album_id"], item["file_path"], item["date_taken"],
-                    item["type"], item["duration"], item["thumbnail_path"]
+                    item["type"], item["duration"], item["thumbnail_path"],
+                    item["width"], item["height"], item["orientation"]
                 ))
                 
-                self.signals.item_added.emit(item)
+                try: self.signals.item_added.emit(item)
+                except RuntimeError: break
                 
                 if len(batch) >= 200:
                     cursor.executemany('''
                         INSERT OR IGNORE INTO media 
-                        (album_id, file_path, date_taken, type, duration, thumbnail_path)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        (album_id, file_path, date_taken, type, duration, thumbnail_path, width, height, orientation)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', batch)
                     conn.commit()
                     batch = []
                 
-                self.signals.progress.emit(i + 1, total)
-
             if batch:
                 cursor.executemany('''
                     INSERT OR IGNORE INTO media 
-                    (album_id, file_path, date_taken, type, duration, thumbnail_path)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (album_id, file_path, date_taken, type, duration, thumbnail_path, width, height, orientation)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', batch)
                 conn.commit()
 
             conn.close()
-            self.signals.finished.emit()
+            try: self.signals.finished.emit()
+            except RuntimeError: pass
 
         except Exception as e:
-            self.signals.error.emit(str(e))
+            try: self.signals.error.emit(str(e))
+            except RuntimeError: pass

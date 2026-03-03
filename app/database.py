@@ -24,7 +24,7 @@ def init_db():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Tables
+    # Table: albums
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS albums (
             id INTEGER PRIMARY KEY,
@@ -33,6 +33,7 @@ def init_db():
         )
     ''')
     
+    # Table: media
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS media (
             id INTEGER PRIMARY KEY,
@@ -42,9 +43,29 @@ def init_db():
             type TEXT,
             duration REAL,
             thumbnail_path TEXT,
+            width INTEGER,
+            height INTEGER,
+            orientation INTEGER,
             FOREIGN KEY(album_id) REFERENCES albums(id)
         )
     ''')
+    
+    # Check for missing columns in existing media table (Migration Support)
+    cursor.execute("PRAGMA table_info(media)")
+    existing_columns = [row[1] for row in cursor.fetchall()]
+    
+    new_columns = {
+        'width': 'INTEGER',
+        'height': 'INTEGER',
+        'orientation': 'INTEGER'
+    }
+    
+    for col_name, col_type in new_columns.items():
+        if col_name not in existing_columns:
+            try:
+                cursor.execute(f"ALTER TABLE media ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                pass # Already exists or other error
     
     # Indexes
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_date ON media(date_taken DESC)')

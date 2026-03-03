@@ -13,6 +13,9 @@ class MediaModel(QAbstractListModel):
     DurationRole = Qt.UserRole + 5
     ThumbnailPathRole = Qt.UserRole + 6
     ExtensionRole = Qt.UserRole + 7
+    WidthRole = Qt.UserRole + 8
+    HeightRole = Qt.UserRole + 9
+    OrientationRole = Qt.UserRole + 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,6 +61,12 @@ class MediaModel(QAbstractListModel):
             return item['thumbnail_path']
         if role == self.ExtensionRole:
             return os.path.splitext(item['file_path'])[1].lower()
+        if role == self.WidthRole:
+            return item.get('width')
+        if role == self.HeightRole:
+            return item.get('height')
+        if role == self.OrientationRole:
+            return item.get('orientation', 1)
 
         return None
 
@@ -66,7 +75,7 @@ class MediaModel(QAbstractListModel):
         cursor = conn.cursor()
         
         query = '''
-            SELECT file_path, date_taken, type, duration, thumbnail_path 
+            SELECT file_path, date_taken, type, duration, thumbnail_path, width, height, orientation
             FROM media 
         '''
         params = []
@@ -86,7 +95,10 @@ class MediaModel(QAbstractListModel):
                 'date_taken': row[1],
                 'media_type': row[2],
                 'duration': row[3],
-                'thumbnail_path': row[4]
+                'thumbnail_path': row[4],
+                'width': row[5],
+                'height': row[6],
+                'orientation': row[7]
             })
         conn.close()
         self._rebuild_display_items()
@@ -129,7 +141,10 @@ class MediaModel(QAbstractListModel):
             'date_taken': item['date_taken'],
             'media_type': item['type'],
             'duration': item.get('duration'),
-            'thumbnail_path': item.get('thumbnail_path')
+            'thumbnail_path': item.get('thumbnail_path'),
+            'width': item.get('width'),
+            'height': item.get('height'),
+            'orientation': item.get('orientation', 1)
         })
         # Re-sort raw items
         self._raw_media_items.sort(key=lambda x: x['date_taken'], reverse=True)

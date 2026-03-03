@@ -68,6 +68,10 @@ class MediaDelegate(QStyledItemDelegate):
         self.thumb_width = 250
         self.thumb_height = 180
         self.header_height = 60
+        self.is_bento = False
+
+    def set_bento(self, enabled):
+        self.is_bento = enabled
 
     def paint(self, painter, option, index):
         item_type = index.data(MediaModel.TypeRole)
@@ -83,12 +87,17 @@ class MediaDelegate(QStyledItemDelegate):
         rect = option.rect
         
         if pixmap and not pixmap.isNull():
+            # In Bento mode, we want to fill the rectangle completely (Center Crop)
             scaled_pix = pixmap.scaled(
                 rect.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
             )
-            crop_rect = QRect(0, 0, rect.width(), rect.height())
-            crop_rect.moveCenter(scaled_pix.rect().center())
-            painter.drawPixmap(rect, scaled_pix, crop_rect)
+            painter.setClipRect(rect)
+            
+            # Center the pixmap
+            x = rect.x() + (rect.width() - scaled_pix.width()) // 2
+            y = rect.y() + (rect.height() - scaled_pix.height()) // 2
+            painter.drawPixmap(x, y, scaled_pix)
+            painter.setClipping(False)
         else:
             painter.fillRect(rect, QColor(40, 40, 40))
         
@@ -159,13 +168,36 @@ class MediaDelegate(QStyledItemDelegate):
             return QSize(self.thumb_width, self.thumb_height)
 
         if item_type == "header":
-            # For IconMode headers, we need to return something that forces a new row
-            # Usually we return full width of the view.
             view = self.parent()
             if view:
                 width = view.viewport().width() - 25
                 return QSize(max(width, 200), self.header_height)
             return QSize(self.thumb_width * 3, self.header_height)
+        
+        if self.is_bento:
+            # Get actual dimensions from DB
+            w = index.data(MediaModel.WidthRole)
+            h = index.data(MediaModel.HeightRole)
+            
+            # Fallback to pixmap if DB is empty
+            if not w or not h:
+                pix = index.data(Qt.DecorationRole)
+                if pix and not pix.isNull():
+                    w, h = pix.width(), pix.height()
+            
+            if w and h:
+                aspect = w / h
+                # Bento Rules (More dramatic sizes)
+                if aspect < 0.7:  # Very Portrait (Tall)
+                    return QSize(250, 520)
+                elif aspect > 1.6: # Very Landscape (Wide)
+                    return QSize(520, 250)
+                elif 0.85 < aspect < 1.15: # Square-ish (Big Square)
+                    return QSize(520, 520)
+            
+            # Default bento size (Medium Square)
+            return QSize(250, 250)
+            
         return QSize(self.thumb_width, self.thumb_height)
 
 class MainWindow(QMainWindow):
@@ -266,6 +298,12 @@ class MainWindow(QMainWindow):
             self.filter_panel.addWidget(cb)
             self.filters[text] = cb
             
+        self.bento_cb = QCheckBox("BENTO VIEW")
+        self.bento_cb.setStyleSheet("color: #0078d7; font-weight: bold;")
+        self.bento_cb.stateChanged.connect(self.toggle_bento)
+        self.filter_panel.addStretch()
+        self.filter_panel.addWidget(self.bento_cb)
+            
         self.right_layout.addLayout(self.filter_panel)
 
         # Grid View
@@ -277,6 +315,7 @@ class MainWindow(QMainWindow):
         self.view.setMovement(QListView.Static)
         self.view.setFlow(QListView.LeftToRight)
         self.view.setWrapping(True)
+        self.view.setLayoutMode(QListView.Batched)
         self.view.setSelectionMode(QListView.SingleSelection)
         self.view.doubleClicked.connect(self.open_viewer_at)
         
@@ -422,6 +461,23 @@ class MainWindow(QMainWindow):
                 extensions.add(ext)
         self.proxy_model.set_filters(extensions, show_aae)
 
+    def toggle_bento(self, state):
+        enabled = (state == 2) # Qt.Checked is usually 2
+        self.delegate.set_bento(enabled)
+        
+        if enabled:
+            # We clear the grid size to allow variable item sizes
+            self.view.setGridSize(QSize()) 
+            self.view.setSpacing(15)
+        else:
+            self.view.setGridSize(QSize()) 
+            self.view.setSpacing(10)
+            
+        # Force redraw/layout
+        self.view.doItemsLayout()
+        self.view.viewport().update()
+        self.view.update()
+
     def add_album(self):
         root_path = QFileDialog.getExistingDirectory(self, "Select Photo/Video Folder")
         if root_path:
@@ -456,6 +512,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Scan complete")
         self.load_albums()
         self.source_model.refresh(self.source_model.current_album_id)
+        self.update_available_years()
 
     def setup_calendar_bar(self):
         self.calendar_layout = QHBoxLayout()
@@ -466,21 +523,16 @@ class MainWindow(QMainWindow):
         # Year
         self.year_combo = QComboBox()
         self.year_combo.addItem("Select Year")
-        current_year = QDate.currentDate().year()
-        for y in range(current_year, 1999, -1):
-            self.year_combo.addItem(str(y))
-        self.year_combo.currentTextChanged.connect(self.jump_to_year)
+        self.year_combo.currentTextChanged.connect(self.on_year_changed)
         self.calendar_layout.addWidget(self.year_combo)
         
         # Month
         self.month_combo = QComboBox()
         self.month_combo.addItem("Select Month")
-        months = ["January", "February", "March", "April", "May", "June", 
-                  "July", "August", "September", "October", "November", "December"]
-        for m in months:
-            self.month_combo.addItem(m)
         self.month_combo.currentTextChanged.connect(self.jump_to_month)
         self.calendar_layout.addWidget(self.month_combo)
+        
+        self.update_available_years()
         
         # Date
         self.jump_date_edit = QDateEdit()
@@ -492,29 +544,63 @@ class MainWindow(QMainWindow):
         self.calendar_layout.addStretch()
         self.main_layout.addLayout(self.calendar_layout)
 
-    def jump_to_year(self, year_str):
-        if year_str == "Select Year": return
+    def update_available_years(self):
+        self.year_combo.blockSignals(True)
+        self.year_combo.clear()
+        self.year_combo.addItem("Select Year")
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT strftime('%Y', date_taken) as year FROM media ORDER BY year DESC")
+        years = cursor.fetchall()
+        for row in years:
+            if row[0]:
+                self.year_combo.addItem(row[0])
+        conn.close()
+        self.year_combo.blockSignals(False)
+
+    def on_year_changed(self, year_str):
+        if year_str == "Select Year":
+            self.month_combo.clear()
+            self.month_combo.addItem("Select Month")
+            return
+
+        # Update months for this year
+        self.month_combo.blockSignals(True)
+        self.month_combo.clear()
+        self.month_combo.addItem("Select Month")
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT strftime('%m', date_taken) as month 
+            FROM media 
+            WHERE strftime('%Y', date_taken) = ? 
+            ORDER BY month ASC
+        """, (year_str,))
+        months_found = cursor.fetchall()
+        
+        month_names = ["January", "February", "March", "April", "May", "June", 
+                      "July", "August", "September", "October", "November", "December"]
+        
+        for row in months_found:
+            if row[0]:
+                m_idx = int(row[0]) - 1
+                self.month_combo.addItem(month_names[m_idx], row[0])
+        
+        conn.close()
+        self.month_combo.blockSignals(False)
         self._jump_to_pattern(f"{year_str}-")
 
     def jump_to_month(self, month_name):
         if month_name == "Select Month": return
         year = self.year_combo.currentText()
-        if year == "Select Year":
-            # Just find the first occurrence of this month in any year?
-            # Better to just use current year or most recent.
-            # But the requirement says "jump to first media of that month".
-            # Let's try to find it in the model.
-            months = ["January", "February", "March", "April", "May", "June", 
-                      "July", "August", "September", "October", "November", "December"]
-            month_num = months.index(month_name) + 1
-            pattern = f"-{month_num:02d}-"
-        else:
-            months = ["January", "February", "March", "April", "May", "June", 
-                      "July", "August", "September", "October", "November", "December"]
-            month_num = months.index(month_name) + 1
-            pattern = f"{year}-{month_num:02d}-"
+        if year == "Select Year": return
         
-        self._jump_to_pattern(pattern)
+        month_idx = self.month_combo.currentData()
+        if month_idx:
+            pattern = f"{year}-{month_idx}-"
+            self._jump_to_pattern(pattern)
 
     def jump_to_date(self, qdate):
         date_str = qdate.toString("yyyy-MM-dd")
